@@ -27,6 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.antigravity.deadframeremover.engine.DetectionSettings
 import com.antigravity.deadframeremover.engine.FrameInspectorEngine
 import com.antigravity.deadframeremover.engine.FrameItem
 import com.antigravity.deadframeremover.engine.ProcessingProgress
@@ -46,6 +47,8 @@ data class MainUiState(
     val selectedUri: Uri? = null,
     val selectedFileName: String? = null,
     val mseThreshold: Float = 1.5f,
+    val detectionPrecise: Boolean = false,
+    val detectionSensitivity: Int = 1,
     val isProcessing: Boolean = false,
     val isAnalyzingFrames: Boolean = false,
     val frames: List<FrameItem> = emptyList(),
@@ -90,6 +93,19 @@ class VideoProcessingViewModel : ViewModel() {
         _uiState.update { it.copy(mseThreshold = threshold) }
     }
 
+    fun setPreciseMode(precise: Boolean) {
+        _uiState.update { it.copy(detectionPrecise = precise) }
+    }
+
+    fun setDetailSensitivity(level: Int) {
+        _uiState.update { it.copy(detectionSensitivity = level.coerceIn(0, 2)) }
+    }
+
+    private fun currentDetection(): DetectionSettings = DetectionSettings(
+        precise = _uiState.value.detectionPrecise,
+        sensitivity = _uiState.value.detectionSensitivity
+    )
+
     fun analyzeFrames(engine: FrameInspectorEngine) {
         val currentUri = _uiState.value.selectedUri ?: return
         if (_uiState.value.isAnalyzingFrames || _uiState.value.isProcessing) return
@@ -101,7 +117,8 @@ class VideoProcessingViewModel : ViewModel() {
                 val extracted = engine.analyzeFrames(
                     inputUri = currentUri,
                     mseThreshold = _uiState.value.mseThreshold.toDouble(),
-                    maxFramesToSample = 240
+                    maxFramesToSample = 240,
+                    detection = currentDetection()
                 ) { _, _, _ -> }
 
                 _uiState.update {
@@ -165,7 +182,8 @@ class VideoProcessingViewModel : ViewModel() {
                     inputUri = currentUri,
                     outputFile = tempFile,
                     mseThreshold = _uiState.value.mseThreshold.toDouble(),
-                    selectedFrames = if (useSelection && frames.isNotEmpty()) frames else null
+                    selectedFrames = if (useSelection && frames.isNotEmpty()) frames else null,
+                    detection = currentDetection()
                 ) { progressUpdate ->
                     _uiState.update { it.copy(progress = progressUpdate) }
                 }
@@ -390,6 +408,14 @@ class MainActivity : ComponentActivity() {
                     },
                     onClearLogs = {
                         AppLogManager.clearLogs()
+                    },
+                    preciseMode = state.detectionPrecise,
+                    detailSensitivity = state.detectionSensitivity,
+                    onPreciseModeChange = { precise ->
+                        viewModel.setPreciseMode(precise)
+                    },
+                    onDetailSensitivityChange = { level ->
+                        viewModel.setDetailSensitivity(level)
                     }
                 )
             }
