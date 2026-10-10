@@ -33,6 +33,7 @@ class FrameInspectorEngine(private val context: Context) {
         inputUri: Uri,
         mseThreshold: Double,
         maxFramesToSample: Int = 240,
+        detection: DetectionSettings = DetectionSettings(),
         onProgress: (Float, Int, Int) -> Unit
     ): List<FrameItem> = withContext(Dispatchers.Default) {
         val frameList = mutableListOf<FrameItem>()
@@ -78,12 +79,15 @@ class FrameInspectorEngine(private val context: Context) {
             decoder.configure(videoFormat, null, null, 0)
             decoder.start()
 
-            packedPrevY = ByteBuffer.allocateDirect(width * height)
+            // Rápido: solo el plano Y (width*height). Preciso: NV12 completo (width*height*3/2).
+            packedPrevY = ByteBuffer.allocateDirect(
+                if (detection.precise) width * height * 3 / 2 else width * height
+            )
 
             AppLogManager.log(
                 LogLevel.INFO,
                 "FrameInspector",
-                "Starting hardware MediaCodec frame analysis: ${width}x${height}, maxFrames=$maxFramesToSample, threshold=$mseThreshold"
+                "Starting hardware MediaCodec frame analysis: ${width}x${height}, maxFrames=$maxFramesToSample, threshold=$mseThreshold, mode=${if (detection.precise) "precise(sensitivity=${detection.sensitivity})" else "fast"}"
             )
 
             val bufferInfo = MediaCodec.BufferInfo()
@@ -140,12 +144,25 @@ class FrameInspectorEngine(private val context: Context) {
                                 val isDead: Boolean
 
                                 if (hasPrevFrame && packedPrevY != null && NativeComparator.isLoaded) {
-                                    mse = NativeComparator.comparePackedWithYPlane(
-                                        packedPrevY,
-                                        yBuf, curYPos,
-                                        yPlane.rowStride, yPlane.pixelStride,
-                                        width, height
-                                    )
+                                    mse = if (detection.precise) {
+                                        // earlyExit = 0.0: puntuación completa, para mostrarla tal cual en cada miniatura
+                                        NativeComparator.comparePreciseNV12(
+                                            packedPrevY,
+                                            yBuf, curYPos, yPlane.rowStride, yPlane.pixelStride,
+                                            uPlane.buffer, uPlane.buffer.position(), uPlane.rowStride, uPlane.pixelStride,
+                                            vPlane.buffer, vPlane.buffer.position(), vPlane.rowStride, vPlane.pixelStride,
+                                            width, height,
+                                            detection.sensitivity,
+                                            0.0
+                                        )
+                                    } else {
+                                        NativeComparator.comparePackedWithYPlane(
+                                            packedPrevY,
+                                            yBuf, curYPos,
+                                            yPlane.rowStride, yPlane.pixelStride,
+                                            width, height
+                                        )
+                                    }
                                     isDead = mse <= mseThreshold
                                 } else {
                                     mse = 999.0 // First frame is baseline
@@ -167,13 +184,24 @@ class FrameInspectorEngine(private val context: Context) {
                                 // Update packed baseline Y plane if frame is good (or baseline)
                                 if (!isDead || !hasPrevFrame) {
                                     if (NativeComparator.isLoaded && packedPrevY != null) {
-                                        NativeComparator.packYPlane(
-                                            yBuf, curYPos,
-                                            yPlane.rowStride, yPlane.pixelStride,
-                                            width, height,
-                                            packedPrevY
-                                        )
-                                        hasPrevFrame = true
+                                        if (detection.precise) {
+                                            val packRet = NativeComparator.normalizeYUV420ToNV12(
+                                                yBuf, curYPos, yPlane.rowStride, yPlane.pixelStride,
+                                                uPlane.buffer, uPlane.buffer.position(), uPlane.rowStride, uPlane.pixelStride,
+                                                vPlane.buffer, vPlane.buffer.position(), vPlane.rowStride, vPlane.pixelStride,
+                                                packedPrevY, 0,
+                                                width, height
+                                            )
+                                            hasPrevFrame = (packRet == 0)
+                                        } else {
+                                            NativeComparator.packYPlane(
+                                                yBuf, curYPos,
+                                                yPlane.rowStride, yPlane.pixelStride,
+                                                width, height,
+                                                packedPrevY
+                                            )
+                                            hasPrevFrame = true
+                                        }
                                     }
                                 }
 

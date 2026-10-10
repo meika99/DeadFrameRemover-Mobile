@@ -128,6 +128,7 @@ class VideoProcessingEngine(private val context: Context) {
         outputFile: File,
         mseThreshold: Double,
         selectedFrames: List<FrameItem>? = null,
+        detection: DetectionSettings = DetectionSettings(),
         onProgressUpdate: (ProcessingProgress) -> Unit
     ) = withContext(Dispatchers.Default) {
         if (!NativeComparator.isLoaded) {
@@ -263,12 +264,15 @@ class VideoProcessingEngine(private val context: Context) {
                 rotationHint = rotationHint
             )
 
-            packedPrevY = ByteBuffer.allocateDirect(width * height)
+            // Rápido: solo el plano Y (width*height). Preciso: NV12 completo (width*height*3/2).
+            packedPrevY = ByteBuffer.allocateDirect(
+                if (detection.precise) width * height * 3 / 2 else width * height
+            )
 
             AppLogManager.log(
                 LogLevel.INFO,
                 "MediaCodecPipeline",
-                "Pipeline initialized: ${width}x${height} @ ${frameRate}fps, threshold=$mseThreshold, hasAudio=${audioExtractor != null}"
+                "Pipeline initialized: ${width}x${height} @ ${frameRate}fps, threshold=$mseThreshold, mode=${if (detection.precise) "precise(sensitivity=${detection.sensitivity})" else "fast"}, hasAudio=${audioExtractor != null}"
             )
 
             val decBufferInfo = MediaCodec.BufferInfo()
@@ -472,12 +476,27 @@ class VideoProcessingEngine(private val context: Context) {
                                         val curYPos = yPlane.buffer.position()
 
                                         val mse = if (hasPrevFrame && packedPrevY != null) {
-                                            NativeComparator.comparePackedWithYPlane(
-                                                packedPrevY,
-                                                yPlane.buffer, curYPos,
-                                                yPlane.rowStride, yPlane.pixelStride,
-                                                width, height
-                                            )
+                                            if (detection.precise) {
+                                                val uPlane = image.planes[1]
+                                                val vPlane = image.planes[2]
+                                                // earlyExit = umbral: en cuanto un bloque lo supera ya se sabe que NO es duplicado
+                                                NativeComparator.comparePreciseNV12(
+                                                    packedPrevY,
+                                                    yPlane.buffer, curYPos, yPlane.rowStride, yPlane.pixelStride,
+                                                    uPlane.buffer, uPlane.buffer.position(), uPlane.rowStride, uPlane.pixelStride,
+                                                    vPlane.buffer, vPlane.buffer.position(), vPlane.rowStride, vPlane.pixelStride,
+                                                    width, height,
+                                                    detection.sensitivity,
+                                                    mseThreshold
+                                                )
+                                            } else {
+                                                NativeComparator.comparePackedWithYPlane(
+                                                    packedPrevY,
+                                                    yPlane.buffer, curYPos,
+                                                    yPlane.rowStride, yPlane.pixelStride,
+                                                    width, height
+                                                )
+                                            }
                                         } else {
                                             999.0
                                         }
@@ -516,13 +535,26 @@ class VideoProcessingEngine(private val context: Context) {
 
                                             // Update baseline packed Y plane for next comparison
                                             if (packedPrevY != null) {
-                                                NativeComparator.packYPlane(
-                                                    yPlane.buffer, curYPos,
-                                                    yPlane.rowStride, yPlane.pixelStride,
-                                                    width, height,
-                                                    packedPrevY
-                                                )
-                                                hasPrevFrame = true
+                                                if (detection.precise) {
+                                                    val uPlane = image.planes[1]
+                                                    val vPlane = image.planes[2]
+                                                    val packRet = NativeComparator.normalizeYUV420ToNV12(
+                                                        yPlane.buffer, curYPos, yPlane.rowStride, yPlane.pixelStride,
+                                                        uPlane.buffer, uPlane.buffer.position(), uPlane.rowStride, uPlane.pixelStride,
+                                                        vPlane.buffer, vPlane.buffer.position(), vPlane.rowStride, vPlane.pixelStride,
+                                                        packedPrevY, 0,
+                                                        width, height
+                                                    )
+                                                    hasPrevFrame = (packRet == 0)
+                                                } else {
+                                                    NativeComparator.packYPlane(
+                                                        yPlane.buffer, curYPos,
+                                                        yPlane.rowStride, yPlane.pixelStride,
+                                                        width, height,
+                                                        packedPrevY
+                                                    )
+                                                    hasPrevFrame = true
+                                                }
                                             }
 
                                             // Feed encoder with normalized NV12 data
