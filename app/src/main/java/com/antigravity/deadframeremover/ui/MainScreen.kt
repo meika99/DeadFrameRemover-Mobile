@@ -86,7 +86,7 @@ private object Pal {
 }
 
 // ===========================================================================
-// Pantalla principal (misma firma de siempre: MainActivity no necesita cambios)
+// Pantalla principal (la firma de siempre + 4 parámetros opcionales del modo Preciso)
 // ===========================================================================
 @Composable
 fun MainScreen(
@@ -111,7 +111,11 @@ fun MainScreen(
     onCancelExport: () -> Unit,
     onOpenExportedVideo: (File) -> Unit,
     onClearCrashLog: () -> Unit,
-    onClearLogs: () -> Unit
+    onClearLogs: () -> Unit,
+    preciseMode: Boolean = false,
+    detailSensitivity: Int = 1,
+    onPreciseModeChange: (Boolean) -> Unit = {},
+    onDetailSensitivityChange: (Int) -> Unit = {}
 ) {
     ScreenTheme {
         MainScreenContent(
@@ -136,7 +140,11 @@ fun MainScreen(
             onCancelExport = onCancelExport,
             onOpenExportedVideo = onOpenExportedVideo,
             onClearCrashLog = onClearCrashLog,
-            onClearLogs = onClearLogs
+            onClearLogs = onClearLogs,
+            preciseMode = preciseMode,
+            detailSensitivity = detailSensitivity,
+            onPreciseModeChange = onPreciseModeChange,
+            onDetailSensitivityChange = onDetailSensitivityChange
         )
     }
 }
@@ -164,7 +172,11 @@ private fun MainScreenContent(
     onCancelExport: () -> Unit,
     onOpenExportedVideo: (File) -> Unit,
     onClearCrashLog: () -> Unit,
-    onClearLogs: () -> Unit
+    onClearLogs: () -> Unit,
+    preciseMode: Boolean,
+    detailSensitivity: Int,
+    onPreciseModeChange: (Boolean) -> Unit,
+    onDetailSensitivityChange: (Int) -> Unit
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -237,7 +249,11 @@ private fun MainScreenContent(
                     busy = busy,
                     showHelp = showHelp,
                     onToggleHelp = { showHelp = !showHelp },
-                    onChange = onThresholdChange
+                    onChange = onThresholdChange,
+                    preciseMode = preciseMode,
+                    detailSensitivity = detailSensitivity,
+                    onPreciseModeChange = onPreciseModeChange,
+                    onDetailSensitivityChange = onDetailSensitivityChange
                 )
 
                 FramesSection(
@@ -501,6 +517,51 @@ private fun OutlineChip(
 }
 
 @Composable
+private fun SegmentedChoice(
+    options: List<String>,
+    selectedIndex: Int,
+    enabled: Boolean,
+    onSelect: (Int) -> Unit
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Pal.line.copy(alpha = 0.45f))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        options.forEachIndexed { index, label ->
+            val selected = index == selectedIndex
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 46.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (selected) Pal.accent else Color.Transparent)
+                    .clickable(enabled = enabled, onClick = { onSelect(index) })
+                    .padding(horizontal = 6.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    color = when {
+                        selected -> Pal.onAccent
+                        enabled -> Pal.text
+                        else -> Pal.dim
+                    },
+                    fontSize = 14.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun LegendDot(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -732,7 +793,11 @@ private fun ThresholdSection(
     busy: Boolean,
     showHelp: Boolean,
     onToggleHelp: () -> Unit,
-    onChange: (Float) -> Unit
+    onChange: (Float) -> Unit,
+    preciseMode: Boolean,
+    detailSensitivity: Int,
+    onPreciseModeChange: (Boolean) -> Unit,
+    onDetailSensitivityChange: (Int) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         StepLabel(number = "02", title = "SENSIBILIDAD")
@@ -743,6 +808,53 @@ private fun ThresholdSection(
                 fontFamily = FontFamily.Serif,
                 fontSize = 20.sp
             )
+
+            // Modo de detección: Rápido (el de siempre) o Preciso (por zonas y con color)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedChoice(
+                    options = listOf("Rápido", "Preciso"),
+                    selectedIndex = if (preciseMode) 1 else 0,
+                    enabled = !busy,
+                    onSelect = { index -> onPreciseModeChange(index == 1) }
+                )
+                Text(
+                    text = if (preciseMode) {
+                        "Revisa la imagen por zonas y también el color. Detecta movimientos pequeños, como una boca o un parpadeo. Puede conservar más fotogramas."
+                    } else {
+                        "Compara el brillo de toda la imagen. Es el modo de siempre y el más veloz."
+                    },
+                    color = Pal.dim,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            }
+
+            if (preciseMode) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Sensibilidad a detalles pequeños",
+                        color = Pal.text,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    SegmentedChoice(
+                        options = listOf("Baja", "Media", "Alta"),
+                        selectedIndex = detailSensitivity.coerceIn(0, 2),
+                        enabled = !busy,
+                        onSelect = { index -> onDetailSensitivityChange(index) }
+                    )
+                    Text(
+                        text = when (detailSensitivity) {
+                            0 -> "Ignora los cambios muy pequeños: se descartan más duplicados."
+                            2 -> "Detecta hasta el cambio más mínimo: se conservan más fotogramas, también los de ruido de compresión. Si quedan duplicados, sube el umbral."
+                            else -> "Equilibrada: detecta bocas, parpadeos y destellos. Es el punto de partida recomendado."
+                        },
+                        color = Pal.dim,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                }
+            }
 
             // Valor grande con botones − / + para ajustar de 0.1 en 0.1
             Row(
@@ -852,7 +964,7 @@ private fun ThresholdSection(
             }
             if (showHelp) {
                 Text(
-                    text = "Los fotogramas con error cuadrático medio (MSE) menor o igual al umbral se descartan como duplicados o congelados. En grabaciones de pantalla y juegos, entre 0.5 y 2.0 elimina los congelamientos exactos. En videos de cámara, entre 2.0 y 5.0 detecta duplicados sutiles causados por la compresión.",
+                    text = "Los fotogramas con error cuadrático medio (MSE) menor o igual al umbral se descartan como duplicados o congelados. En grabaciones de pantalla y juegos, entre 0.5 y 2.0 elimina los congelamientos exactos. En videos de cámara, entre 2.0 y 5.0 detecta duplicados sutiles causados por la compresión. En modo Preciso el mismo umbral se aplica por zonas: si cambias el modo o la sensibilidad, pulsa «Analizar de nuevo» para ver el resultado en las miniaturas.",
                     color = Pal.dim,
                     fontSize = 13.sp,
                     lineHeight = 20.sp
